@@ -1,0 +1,293 @@
+---
+title: "ML on the Diabetes datasets"
+author: "Highly Classified"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Loading the required libraries
+
+library(tidyverse)
+library(caret)
+library(caretForecast)
+library(caretEnsemble)
+library(mice)
+library(VIM)
+library(bestNormalize)
+library(kableExtra)
+library(flextable)
+
+# Reading the data into the R environment
+
+diabetes <- "G:/VADSTI_3.0/Module_1/diabetes.csv" |> 
+  read.csv()
+
+```
+
+```{r}
+diabetes %>% kable() %>% kable_styling(bootstrap_options = c("striped", "basic"))
+```
+
+## Initial Investigations of the datasets
+
+```{r}
+diabetes %>% 
+  glimpse()
+```
+
+```{r}
+ diabetes %>% 
+  summary() %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = c("basic", 
+                                      "striped"))
+
+  
+```
+
+## Manipulation of the diabetes datasets
+
+```{r}
+diabetes <- diabetes %>% 
+  mutate(Outcome = case_when(
+    Outcome == 1 ~ "diabetic", 
+    Outcome == 0 ~ "non-diabetic",
+    TRUE ~ as.character(Outcome)
+  )) %>% 
+  mutate(
+    Outcome = factor(Outcome)
+  )
+```
+
+# Missing values analysis
+
+## Visualization of missing data in the diabetes data
+
+```{r}
+viz_NA <- diabetes %>% 
+  aggr() 
+```
+
+```{r}
+viz_NA %>% 
+  summary()
+```
+
+## Imputting missing values
+
+```{r}
+diabetes_imp <- diabetes %>% 
+  preProcess(method = "bagImpute")
+
+diabetes <- diabetes_imp %>% 
+  predict(diabetes)
+
+diabetes %>% kable() %>% 
+  kable_styling(bootstrap_options = c("striped", "basic"))
+  
+```
+
+## Adding new variable to bring more insight to the data
+
+```{r}
+diabetes_cat <- diabetes %>% 
+  mutate(BMI_category = case_when(
+    BMI < 18.5 ~ "Unhealthy Low",
+    BMI >= 18.5 & BMI < 25 ~ "Healthy",
+    BMI >= 25 & BMI < 30 ~ "Overweight",
+    BMI >= 30 ~ "Obese",
+    TRUE ~ as.character(BMI)
+  )) %>% 
+  mutate(BMI_category = factor(BMI_category,
+    levels = c("Unhealthy Low", 
+               "Healthy",
+               "Overweight",
+               "Obese")
+  ))
+
+diabetes_cat %>% kable() %>% 
+  kable_styling(bootstrap_options = c("striped", "basic"))
+```
+
+```{r include=FALSE}
+theme_set(theme_light())
+
+```
+
+## Polar chart (Outcome)
+
+```{r}
+diabetes_cat %>% 
+  count(Outcome) %>% 
+  ggplot(
+    aes(
+    x = Outcome,
+    y = n, 
+    fill = Outcome
+    )
+  ) +
+  geom_col(
+    color = "black", 
+    width = .6
+  ) + coord_polar(theta = "x")
+
+```
+
+## Bar chart (BMI_category)
+
+```{r}
+diabetes_cat %>% 
+  count(BMI_category) %>% 
+  ggplot(
+    aes(
+      x = BMI_category,
+      y = n, 
+      fill = BMI_category
+    )
+  ) + 
+  geom_col(
+    color = "black",
+    width = .6
+  ) + 
+  # coord_polar(theta = "x") + 
+  labs(fill = "BMI\nCategory")
+```
+
+```{r}
+diabetes_cat %>% 
+  group_by(Outcome, BMI_category) %>% 
+  summarise(average = mean(Age),
+            max_age = max(Age),
+            min_age = min(Age),
+            age_difference = max(Age) - min(Age),
+            freq = n()) %>% kable() %>% 
+  kable_styling(bootstrap_options = c("striped", "basic"))
+
+```
+
+## Boxplot depicting the association age, outcome and BMI_category
+
+```{r}
+diabetes_cat %>% 
+  ggplot(
+    aes(
+      x = BMI_category,
+      y = Age,
+      fill = Outcome
+    )
+  ) + 
+  geom_boxplot(
+    outlier.shape = NA
+  ) + facet_wrap(~Outcome)
+```
+
+## Feature Selection
+
+```{r}
+cor(diabetes$Age, diabetes$BMI) %>% 
+  round(2)
+```
+
+```{r}
+diabetes %>% 
+  nzv() # There is a high variance between variables hence there is no need to eliminate a variable
+
+# There is no correlation between Age and BMI
+```
+
+## Checking for normality of the datasets
+
+```{r}
+MVN::mvn(diabetes[, -9])
+```
+
+## Data transformation and preprocessing
+
+```{r}
+diabetes_trans <- diabetes %>%
+  preProcess(method = c("scale",
+                        "center"))
+
+diabetes_final <- diabetes_trans %>%
+  predict(diabetes)
+```
+
+## Data Splitting
+
+```{r}
+set.seed(33)
+
+index <- createDataPartition(
+  diabetes$Outcome, 
+  p = 0.7, 
+  list = FALSE
+)
+
+train_diabetes_final <- diabetes_final[index, ]
+validate_diabetes_final <- diabetes_final[-index, ]
+```
+
+## Model selection and training
+
+```{r}
+trCTRL <- trainControl(method = "repeatedcv",
+                       number = 5,
+                       repeats = 3)
+```
+
+### Logistic Regression Model
+
+```{r}
+logitreg_model <- train(Outcome ~ .,
+                        data = train_diabetes_final,
+                        method = "glm",
+                        family = "binomial",
+                        trControl = trCTRL
+                        )
+```
+
+### Naive Bayes model
+
+```{r}
+naivebayes_model <- train(Outcome ~ .,
+                         data = train_diabetes_final,
+                         method = "naive_bayes",
+                         trControl = trCTRL
+)
+```
+
+## Making predictions with the ML models
+
+```{r}
+logit_pred <- logitreg_model %>% 
+  predict(validate_diabetes_final)
+
+nb_pred <- naivebayes_model %>% 
+  predict(validate_diabetes_final)
+```
+
+## Evaluating model performance
+
+```{r}
+validate_diabetes_final$Outcome %>% 
+  confusionMatrix(logit_pred)
+```
+
+```{r}
+validate_diabetes_final$Outcome %>% 
+  confusionMatrix(nb_pred)
+```
+
+## Important variables in the model
+
+```{r}
+varImp(logitreg_model)
+varImp(logitreg_model) %>% plot()
+```
+
+```{r}
+varImp(naivebayes_model)
+varImp(naivebayes_model) %>% plot()
+```
